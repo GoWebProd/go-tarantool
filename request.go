@@ -1,107 +1,427 @@
 package tarantool
 
 import (
-	"errors"
-	"time"
-
-	"gopkg.in/vmihailenco/msgpack.v2"
+	"github.com/GoWebProd/msgp/msgp"
+	"github.com/pkg/errors"
 )
 
-// Future is a handle for asynchronous request
-type Future struct {
+type request struct {
 	requestId   uint32
 	requestCode int32
-	timeout     time.Duration
-	resp        *Response
-	err         error
-	ready       chan struct{}
-	next        *Future
+
+	iterator uint32
+	offset   uint32
+	limit    uint32
+	space    uint32
+	index    uint32
+	key      Body
+	tuple    Body
+	function string
+
+	userName string
+	method   string
+	scramble []byte
+}
+
+func (z *request) EncodeMsg(en *msgp.Writer) error {
+	switch z.requestCode {
+	case AuthRequest:
+		en.WriteMapHeader(2)
+		en.WriteUint(KeyUserName)
+		en.WriteString(z.userName)
+		en.WriteUint(KeyTuple)
+		en.WriteArrayHeader(2)
+		en.WriteString(z.method)
+		en.WriteStringFromBytes(z.scramble)
+
+		return nil
+	case PingRequest:
+		return en.WriteMapHeader(0)
+	case SelectRequest:
+		en.WriteMapHeader(6)
+		en.WriteUint64(KeyIterator)
+		en.WriteUint32(z.iterator)
+		en.WriteUint64(KeyOffset)
+		en.WriteUint32(z.offset)
+		en.WriteUint64(KeyLimit)
+		en.WriteUint32(z.limit)
+		en.WriteUint64(KeySpaceNo)
+		en.WriteUint32(z.space)
+		en.WriteUint64(KeyIndexNo)
+		en.WriteUint32(z.index)
+		en.WriteUint64(KeyKey)
+
+		if z.key == nil {
+			return en.WriteArrayHeader(0)
+		}
+
+		return z.key.EncodeMsg(en)
+	case ReplaceRequest, InsertRequest:
+		en.WriteMapHeader(2)
+		en.WriteUint64(KeySpaceNo)
+		en.WriteUint32(z.space)
+		en.WriteUint64(KeyTuple)
+
+		if z.tuple == nil {
+			return en.WriteArrayHeader(0)
+		}
+
+		return z.tuple.EncodeMsg(en)
+	case DeleteRequest:
+		en.WriteMapHeader(3)
+		en.WriteUint64(KeySpaceNo)
+		en.WriteUint32(z.space)
+		en.WriteUint64(KeyIndexNo)
+		en.WriteUint32(z.index)
+		en.WriteUint64(KeyKey)
+
+		if z.key == nil {
+			return en.WriteArrayHeader(0)
+		}
+
+		return z.key.EncodeMsg(en)
+	case UpdateRequest:
+		en.WriteMapHeader(4)
+		en.WriteUint64(KeySpaceNo)
+		en.WriteUint32(z.space)
+		en.WriteUint64(KeyIndexNo)
+		en.WriteUint32(z.index)
+		en.WriteUint64(KeyKey)
+
+		if z.key == nil {
+			en.WriteArrayHeader(0)
+		} else {
+			z.key.EncodeMsg(en)
+		}
+
+		en.WriteUint64(KeyTuple)
+
+		if z.tuple == nil {
+			return en.WriteArrayHeader(0)
+		}
+
+		return z.tuple.EncodeMsg(en)
+	case UpsertRequest:
+		en.WriteMapHeader(3)
+		en.WriteUint64(KeySpaceNo)
+		en.WriteUint32(z.space)
+		en.WriteUint64(KeyTuple)
+
+		if z.key == nil {
+			en.WriteArrayHeader(0)
+		} else {
+			z.key.EncodeMsg(en)
+		}
+
+		en.WriteUint64(KeyDefTuple)
+
+		if z.tuple == nil {
+			return en.WriteArrayHeader(0)
+		}
+
+		return z.tuple.EncodeMsg(en)
+	case CallRequest, Call17Request:
+		en.WriteMapHeader(2)
+		en.WriteUint64(KeyFunctionName)
+		en.WriteString(z.function)
+		en.WriteUint64(KeyTuple)
+
+		if z.tuple == nil {
+			return en.WriteArrayHeader(0)
+		}
+
+		return z.tuple.EncodeMsg(en)
+	case EvalRequest:
+		en.WriteMapHeader(2)
+		en.WriteUint64(KeyExpression)
+		en.WriteString(z.function)
+		en.WriteUint64(KeyTuple)
+
+		if z.tuple == nil {
+			return en.WriteArrayHeader(0)
+		}
+
+		return z.tuple.EncodeMsg(en)
+	}
+
+	return errors.Errorf("bad request: %d", z.requestCode)
+}
+
+func (z *request) Msgsize() int {
+	switch z.requestCode {
+	case AuthRequest:
+		return 2 + msgp.IntSize(KeyUserName) + msgp.StringSize(len(z.userName)) + msgp.IntSize(KeyTuple) + msgp.StringSize(len(z.method)) + msgp.StringSize(len(z.scramble))
+	case PingRequest:
+		return 1
+	case SelectRequest:
+		s := 7 + msgp.IntSize(uint64(z.iterator)) + msgp.IntSize(uint64(z.offset)) + msgp.IntSize(uint64(z.limit)) + msgp.IntSize(uint64(z.space)) + msgp.IntSize(uint64(z.index))
+
+		if z.key == nil {
+			s += 1
+		} else {
+			s += z.key.Msgsize()
+		}
+
+		return s
+	case ReplaceRequest, InsertRequest:
+		s := 3 + msgp.IntSize(uint64(z.space))
+
+		if z.tuple == nil {
+			s += 1
+		} else {
+			s += z.tuple.Msgsize()
+		}
+
+		return s
+	case DeleteRequest:
+		s := 4 + msgp.IntSize(uint64(z.space)) + msgp.IntSize(uint64(z.index))
+
+		if z.key == nil {
+			s += 1
+		} else {
+			s += z.key.Msgsize()
+		}
+
+		return s
+	case UpdateRequest:
+		s := 5 + msgp.IntSize(uint64(z.space)) + msgp.IntSize(uint64(z.index))
+
+		if z.key == nil {
+			s += 1
+		} else {
+			s += z.key.Msgsize()
+		}
+
+		if z.tuple == nil {
+			s += 1
+		} else {
+			s += z.tuple.Msgsize()
+		}
+
+		return s
+	case UpsertRequest:
+		s := 4 + msgp.IntSize(uint64(z.space))
+
+		if z.key == nil {
+			s += 1
+		} else {
+			s += z.key.Msgsize()
+		}
+
+		if z.tuple == nil {
+			s += 1
+		} else {
+			s += z.tuple.Msgsize()
+		}
+
+		return s
+	case CallRequest, Call17Request, EvalRequest:
+		s := 3 + msgp.StringSize(len(z.function))
+
+		if z.tuple == nil {
+			s += 1
+		} else {
+			s += z.tuple.Msgsize()
+		}
+
+		return s
+	}
+
+	return 0
 }
 
 // Ping sends empty request to Tarantool to check connection.
-func (conn *Connection) Ping() (resp *Response, err error) {
-	future := conn.newFuture(PingRequest)
-	return future.send(conn, func(enc *msgpack.Encoder) error { enc.EncodeMapLen(0); return nil }).Get()
+func (conn *Connection) Ping() (resp Response, err error) {
+	future := conn.newFuture(request{
+		requestCode: PingRequest,
+	})
+
+	conn.queue <- future
+
+	return future.Get()
 }
 
-func (req *Future) fillSearch(enc *msgpack.Encoder, spaceNo, indexNo uint32, key interface{}) error {
-	enc.EncodeUint64(KeySpaceNo)
-	enc.EncodeUint64(uint64(spaceNo))
-	enc.EncodeUint64(KeyIndexNo)
-	enc.EncodeUint64(uint64(indexNo))
-	enc.EncodeUint64(KeyKey)
-	return enc.Encode(key)
-}
+// SelectAsync sends select request to tarantool and returns Future.
+func (conn *Connection) SelectAsync(space, index, offset, limit, iterator uint32, key Body) *Future {
+	future := conn.newFuture(request{
+		requestCode: SelectRequest,
 
-func (req *Future) fillIterator(enc *msgpack.Encoder, offset, limit, iterator uint32) {
-	enc.EncodeUint64(KeyIterator)
-	enc.EncodeUint64(uint64(iterator))
-	enc.EncodeUint64(KeyOffset)
-	enc.EncodeUint64(uint64(offset))
-	enc.EncodeUint64(KeyLimit)
-	enc.EncodeUint64(uint64(limit))
-}
+		space:    space,
+		index:    index,
+		offset:   offset,
+		limit:    limit,
+		iterator: iterator,
+		key:      key,
+	})
 
-func (req *Future) fillInsert(enc *msgpack.Encoder, spaceNo uint32, tuple interface{}) error {
-	enc.EncodeUint64(KeySpaceNo)
-	enc.EncodeUint64(uint64(spaceNo))
-	enc.EncodeUint64(KeyTuple)
-	return enc.Encode(tuple)
+	conn.queue <- future
+
+	return future
 }
 
 // Select performs select to box space.
 //
 // It is equal to conn.SelectAsync(...).Get()
-func (conn *Connection) Select(space, index interface{}, offset, limit, iterator uint32, key interface{}) (resp *Response, err error) {
+func (conn *Connection) Select(space, index, offset, limit, iterator uint32, key Body) (resp Response, err error) {
 	return conn.SelectAsync(space, index, offset, limit, iterator, key).Get()
+}
+
+// InsertAsync sends insert action to tarantool and returns Future.
+// Tarantool will reject Insert when tuple with same primary key exists.
+func (conn *Connection) InsertAsync(space uint32, tuple Body) *Future {
+	future := conn.newFuture(request{
+		requestCode: InsertRequest,
+
+		space: space,
+		tuple: tuple,
+	})
+
+	conn.queue <- future
+
+	return future
 }
 
 // Insert performs insertion to box space.
 // Tarantool will reject Insert when tuple with same primary key exists.
 //
 // It is equal to conn.InsertAsync(space, tuple).Get().
-func (conn *Connection) Insert(space interface{}, tuple interface{}) (resp *Response, err error) {
+func (conn *Connection) Insert(space uint32, tuple Body) (resp Response, err error) {
 	return conn.InsertAsync(space, tuple).Get()
+}
+
+// ReplaceAsync sends "insert or replace" action to tarantool and returns Future.
+// If tuple with same primary key exists, it will be replaced.
+func (conn *Connection) ReplaceAsync(space uint32, tuple Body) *Future {
+	future := conn.newFuture(request{
+		requestCode: ReplaceRequest,
+
+		space: space,
+		tuple: tuple,
+	})
+
+	conn.queue <- future
+
+	return future
 }
 
 // Replace performs "insert or replace" action to box space.
 // If tuple with same primary key exists, it will be replaced.
 //
 // It is equal to conn.ReplaceAsync(space, tuple).Get().
-func (conn *Connection) Replace(space interface{}, tuple interface{}) (resp *Response, err error) {
+func (conn *Connection) Replace(space uint32, tuple Body) (resp Response, err error) {
 	return conn.ReplaceAsync(space, tuple).Get()
+}
+
+// DeleteAsync sends deletion action to tarantool and returns Future.
+// Future's result will contain array with deleted tuple.
+func (conn *Connection) DeleteAsync(space, index uint32, key Body) *Future {
+	future := conn.newFuture(request{
+		requestCode: DeleteRequest,
+
+		space: space,
+		index: index,
+		key:   key,
+	})
+
+	conn.queue <- future
+
+	return future
 }
 
 // Delete performs deletion of a tuple by key.
 // Result will contain array with deleted tuple.
 //
 // It is equal to conn.DeleteAsync(space, tuple).Get().
-func (conn *Connection) Delete(space, index interface{}, key interface{}) (resp *Response, err error) {
+func (conn *Connection) Delete(space, index uint32, key Body) (resp Response, err error) {
 	return conn.DeleteAsync(space, index, key).Get()
+}
+
+// Update sends deletion of a tuple by key and returns Future.
+// Future's result will contain array with updated tuple.
+func (conn *Connection) UpdateAsync(space, index uint32, key, ops Body) *Future {
+	future := conn.newFuture(request{
+		requestCode: UpdateRequest,
+
+		space: space,
+		index: index,
+		key:   key,
+		tuple: ops,
+	})
+
+	conn.queue <- future
+
+	return future
 }
 
 // Update performs update of a tuple by key.
 // Result will contain array with updated tuple.
 //
 // It is equal to conn.UpdateAsync(space, tuple).Get().
-func (conn *Connection) Update(space, index interface{}, key, ops interface{}) (resp *Response, err error) {
+func (conn *Connection) Update(space, index uint32, key, ops Body) (resp Response, err error) {
 	return conn.UpdateAsync(space, index, key, ops).Get()
+}
+
+// UpsertAsync sends "update or insert" action to tarantool and returns Future.
+// Future's sesult will not contain any tuple.
+func (conn *Connection) UpsertAsync(space uint32, key, ops Body) *Future {
+	future := conn.newFuture(request{
+		requestCode: UpsertRequest,
+
+		space: space,
+		key:   key,
+		tuple: ops,
+	})
+
+	conn.queue <- future
+
+	return future
 }
 
 // Upsert performs "update or insert" action of a tuple by key.
 // Result will not contain any tuple.
 //
 // It is equal to conn.UpsertAsync(space, tuple, ops).Get().
-func (conn *Connection) Upsert(space interface{}, tuple, ops interface{}) (resp *Response, err error) {
+func (conn *Connection) Upsert(space uint32, tuple, ops Body) (resp Response, err error) {
 	return conn.UpsertAsync(space, tuple, ops).Get()
+}
+
+// CallAsync sends a call to registered tarantool function and returns Future.
+// It uses request code for tarantool 1.6, so future's result is always array of arrays
+func (conn *Connection) CallAsync(functionName string, args Body) *Future {
+	future := conn.newFuture(request{
+		requestCode: CallRequest,
+
+		function: functionName,
+		tuple:    args,
+	})
+
+	conn.queue <- future
+
+	return future
 }
 
 // Call calls registered tarantool function.
 // It uses request code for tarantool 1.6, so result is converted to array of arrays
 //
 // It is equal to conn.CallAsync(functionName, args).Get().
-func (conn *Connection) Call(functionName string, args interface{}) (resp *Response, err error) {
+func (conn *Connection) Call(functionName string, args Body) (resp Response, err error) {
 	return conn.CallAsync(functionName, args).Get()
+}
+
+// Call17Async sends a call to registered tarantool function and returns Future.
+// It uses request code for tarantool 1.7, so future's result will not be converted
+// (though, keep in mind, result is always array)
+func (conn *Connection) Call17Async(functionName string, args Body) *Future {
+	future := conn.newFuture(request{
+		requestCode: Call17Request,
+
+		function: functionName,
+		tuple:    args,
+	})
+
+	conn.queue <- future
+
+	return future
 }
 
 // Call17 calls registered tarantool function.
@@ -109,351 +429,27 @@ func (conn *Connection) Call(functionName string, args interface{}) (resp *Respo
 // (though, keep in mind, result is always array)
 //
 // It is equal to conn.Call17Async(functionName, args).Get().
-func (conn *Connection) Call17(functionName string, args interface{}) (resp *Response, err error) {
+func (conn *Connection) Call17(functionName string, args Body) (resp Response, err error) {
 	return conn.Call17Async(functionName, args).Get()
+}
+
+// EvalAsync sends a lua expression for evaluation and returns Future.
+func (conn *Connection) EvalAsync(expr string, args Body) *Future {
+	future := conn.newFuture(request{
+		requestCode: EvalRequest,
+
+		function: expr,
+		tuple:    args,
+	})
+
+	conn.queue <- future
+
+	return future
 }
 
 // Eval passes lua expression for evaluation.
 //
-// It is equal to conn.EvalAsync(space, tuple).Get().
-func (conn *Connection) Eval(expr string, args interface{}) (resp *Response, err error) {
+// It is equal to conn.EvalAsync(expr, tuple).Get().
+func (conn *Connection) Eval(expr string, args Body) (resp Response, err error) {
 	return conn.EvalAsync(expr, args).Get()
-}
-
-// single used for conn.GetTyped for decode one tuple
-type single struct {
-	res   interface{}
-	found bool
-}
-
-func (s *single) DecodeMsgpack(d *msgpack.Decoder) error {
-	var err error
-	var len int
-	if len, err = d.DecodeSliceLen(); err != nil {
-		return err
-	}
-	if s.found = len >= 1; !s.found {
-		return nil
-	}
-	if len != 1 {
-		return errors.New("Tarantool returns unexpected value for Select(limit=1)")
-	}
-	return d.Decode(s.res)
-}
-
-// GetTyped performs select (with limit = 1 and offset = 0)
-// to box space and fills typed result.
-//
-// It is equal to conn.SelectAsync(space, index, 0, 1, IterEq, key).GetTyped(&result)
-func (conn *Connection) GetTyped(space, index interface{}, key interface{}, result interface{}) (err error) {
-	s := single{res: result}
-	err = conn.SelectAsync(space, index, 0, 1, IterEq, key).GetTyped(&s)
-	return
-}
-
-// SelectTyped performs select to box space and fills typed result.
-//
-// It is equal to conn.SelectAsync(space, index, offset, limit, iterator, key).GetTyped(&result)
-func (conn *Connection) SelectTyped(space, index interface{}, offset, limit, iterator uint32, key interface{}, result interface{}) (err error) {
-	return conn.SelectAsync(space, index, offset, limit, iterator, key).GetTyped(result)
-}
-
-// InsertTyped performs insertion to box space.
-// Tarantool will reject Insert when tuple with same primary key exists.
-//
-// It is equal to conn.InsertAsync(space, tuple).GetTyped(&result).
-func (conn *Connection) InsertTyped(space interface{}, tuple interface{}, result interface{}) (err error) {
-	return conn.InsertAsync(space, tuple).GetTyped(result)
-}
-
-// ReplaceTyped performs "insert or replace" action to box space.
-// If tuple with same primary key exists, it will be replaced.
-//
-// It is equal to conn.ReplaceAsync(space, tuple).GetTyped(&result).
-func (conn *Connection) ReplaceTyped(space interface{}, tuple interface{}, result interface{}) (err error) {
-	return conn.ReplaceAsync(space, tuple).GetTyped(result)
-}
-
-// DeleteTyped performs deletion of a tuple by key and fills result with deleted tuple.
-//
-// It is equal to conn.DeleteAsync(space, tuple).GetTyped(&result).
-func (conn *Connection) DeleteTyped(space, index interface{}, key interface{}, result interface{}) (err error) {
-	return conn.DeleteAsync(space, index, key).GetTyped(result)
-}
-
-// UpdateTyped performs update of a tuple by key and fills result with updated tuple.
-//
-// It is equal to conn.UpdateAsync(space, tuple, ops).GetTyped(&result).
-func (conn *Connection) UpdateTyped(space, index interface{}, key, ops interface{}, result interface{}) (err error) {
-	return conn.UpdateAsync(space, index, key, ops).GetTyped(result)
-}
-
-// CallTyped calls registered function.
-// It uses request code for tarantool 1.6, so result is converted to array of arrays
-//
-// It is equal to conn.CallAsync(functionName, args).GetTyped(&result).
-func (conn *Connection) CallTyped(functionName string, args interface{}, result interface{}) (err error) {
-	return conn.CallAsync(functionName, args).GetTyped(result)
-}
-
-// Call17Typed calls registered function.
-// It uses request code for tarantool 1.7, so result is not converted
-// (though, keep in mind, result is always array)
-//
-// It is equal to conn.Call17Async(functionName, args).GetTyped(&result).
-func (conn *Connection) Call17Typed(functionName string, args interface{}, result interface{}) (err error) {
-	return conn.Call17Async(functionName, args).GetTyped(result)
-}
-
-// EvalTyped passes lua expression for evaluation.
-//
-// It is equal to conn.EvalAsync(space, tuple).GetTyped(&result).
-func (conn *Connection) EvalTyped(expr string, args interface{}, result interface{}) (err error) {
-	return conn.EvalAsync(expr, args).GetTyped(result)
-}
-
-// SelectAsync sends select request to tarantool and returns Future.
-func (conn *Connection) SelectAsync(space, index interface{}, offset, limit, iterator uint32, key interface{}) *Future {
-	future := conn.newFuture(SelectRequest)
-	spaceNo, indexNo, err := conn.Schema.resolveSpaceIndex(space, index)
-	if err != nil {
-		return future.fail(conn, err)
-	}
-	return future.send(conn, func(enc *msgpack.Encoder) error {
-		enc.EncodeMapLen(6)
-		future.fillIterator(enc, offset, limit, iterator)
-		return future.fillSearch(enc, spaceNo, indexNo, key)
-	})
-}
-
-// InsertAsync sends insert action to tarantool and returns Future.
-// Tarantool will reject Insert when tuple with same primary key exists.
-func (conn *Connection) InsertAsync(space interface{}, tuple interface{}) *Future {
-	future := conn.newFuture(InsertRequest)
-	spaceNo, _, err := conn.Schema.resolveSpaceIndex(space, nil)
-	if err != nil {
-		return future.fail(conn, err)
-	}
-	return future.send(conn, func(enc *msgpack.Encoder) error {
-		enc.EncodeMapLen(2)
-		return future.fillInsert(enc, spaceNo, tuple)
-	})
-}
-
-// ReplaceAsync sends "insert or replace" action to tarantool and returns Future.
-// If tuple with same primary key exists, it will be replaced.
-func (conn *Connection) ReplaceAsync(space interface{}, tuple interface{}) *Future {
-	future := conn.newFuture(ReplaceRequest)
-	spaceNo, _, err := conn.Schema.resolveSpaceIndex(space, nil)
-	if err != nil {
-		return future.fail(conn, err)
-	}
-	return future.send(conn, func(enc *msgpack.Encoder) error {
-		enc.EncodeMapLen(2)
-		return future.fillInsert(enc, spaceNo, tuple)
-	})
-}
-
-// DeleteAsync sends deletion action to tarantool and returns Future.
-// Future's result will contain array with deleted tuple.
-func (conn *Connection) DeleteAsync(space, index interface{}, key interface{}) *Future {
-	future := conn.newFuture(DeleteRequest)
-	spaceNo, indexNo, err := conn.Schema.resolveSpaceIndex(space, index)
-	if err != nil {
-		return future.fail(conn, err)
-	}
-	return future.send(conn, func(enc *msgpack.Encoder) error {
-		enc.EncodeMapLen(3)
-		return future.fillSearch(enc, spaceNo, indexNo, key)
-	})
-}
-
-// Update sends deletion of a tuple by key and returns Future.
-// Future's result will contain array with updated tuple.
-func (conn *Connection) UpdateAsync(space, index interface{}, key, ops interface{}) *Future {
-	future := conn.newFuture(UpdateRequest)
-	spaceNo, indexNo, err := conn.Schema.resolveSpaceIndex(space, index)
-	if err != nil {
-		return future.fail(conn, err)
-	}
-	return future.send(conn, func(enc *msgpack.Encoder) error {
-		enc.EncodeMapLen(4)
-		if err := future.fillSearch(enc, spaceNo, indexNo, key); err != nil {
-			return err
-		}
-		enc.EncodeUint64(KeyTuple)
-		return enc.Encode(ops)
-	})
-}
-
-// UpsertAsync sends "update or insert" action to tarantool and returns Future.
-// Future's sesult will not contain any tuple.
-func (conn *Connection) UpsertAsync(space interface{}, tuple interface{}, ops interface{}) *Future {
-	future := conn.newFuture(UpsertRequest)
-	spaceNo, _, err := conn.Schema.resolveSpaceIndex(space, nil)
-	if err != nil {
-		return future.fail(conn, err)
-	}
-	return future.send(conn, func(enc *msgpack.Encoder) error {
-		enc.EncodeMapLen(3)
-		enc.EncodeUint64(KeySpaceNo)
-		enc.EncodeUint64(uint64(spaceNo))
-		enc.EncodeUint64(KeyTuple)
-		if err := enc.Encode(tuple); err != nil {
-			return err
-		}
-		enc.EncodeUint64(KeyDefTuple)
-		return enc.Encode(ops)
-	})
-}
-
-// CallAsync sends a call to registered tarantool function and returns Future.
-// It uses request code for tarantool 1.6, so future's result is always array of arrays
-func (conn *Connection) CallAsync(functionName string, args interface{}) *Future {
-	future := conn.newFuture(CallRequest)
-	return future.send(conn, func(enc *msgpack.Encoder) error {
-		enc.EncodeMapLen(2)
-		enc.EncodeUint64(KeyFunctionName)
-		enc.EncodeString(functionName)
-		enc.EncodeUint64(KeyTuple)
-		return enc.Encode(args)
-	})
-}
-
-// Call17Async sends a call to registered tarantool function and returns Future.
-// It uses request code for tarantool 1.7, so future's result will not be converted
-// (though, keep in mind, result is always array)
-func (conn *Connection) Call17Async(functionName string, args interface{}) *Future {
-	future := conn.newFuture(Call17Request)
-	return future.send(conn, func(enc *msgpack.Encoder) error {
-		enc.EncodeMapLen(2)
-		enc.EncodeUint64(KeyFunctionName)
-		enc.EncodeString(functionName)
-		enc.EncodeUint64(KeyTuple)
-		return enc.Encode(args)
-	})
-}
-
-// EvalAsync sends a lua expression for evaluation and returns Future.
-func (conn *Connection) EvalAsync(expr string, args interface{}) *Future {
-	future := conn.newFuture(EvalRequest)
-	return future.send(conn, func(enc *msgpack.Encoder) error {
-		enc.EncodeMapLen(2)
-		enc.EncodeUint64(KeyExpression)
-		enc.EncodeString(expr)
-		enc.EncodeUint64(KeyTuple)
-		return enc.Encode(args)
-	})
-}
-
-//
-// private
-//
-
-func (fut *Future) pack(h *smallWBuf, enc *msgpack.Encoder, body func(*msgpack.Encoder) error) (err error) {
-	rid := fut.requestId
-	hl := h.Len()
-	h.Write([]byte{
-		0xce, 0, 0, 0, 0, // length
-		0x82,                           // 2 element map
-		KeyCode, byte(fut.requestCode), // request code
-		KeySync, 0xce,
-		byte(rid >> 24), byte(rid >> 16),
-		byte(rid >> 8), byte(rid),
-	})
-
-	if err = body(enc); err != nil {
-		return
-	}
-
-	l := uint32(h.Len() - 5 - hl)
-	h.b[hl+1] = byte(l >> 24)
-	h.b[hl+2] = byte(l >> 16)
-	h.b[hl+3] = byte(l >> 8)
-	h.b[hl+4] = byte(l)
-
-	return
-}
-
-func (fut *Future) send(conn *Connection, body func(*msgpack.Encoder) error) *Future {
-	if fut.ready == nil {
-		return fut
-	}
-	conn.putFuture(fut, body)
-	return fut
-}
-
-func (fut *Future) markReady(conn *Connection) {
-	close(fut.ready)
-	if conn.rlimit != nil {
-		<-conn.rlimit
-	}
-}
-
-func (fut *Future) fail(conn *Connection, err error) *Future {
-	if f := conn.fetchFuture(fut.requestId); f == fut {
-		f.err = err
-		fut.markReady(conn)
-	}
-	return fut
-}
-
-func (fut *Future) wait() {
-	if fut.ready == nil {
-		return
-	}
-	<-fut.ready
-}
-
-// Get waits for Future to be filled and returns Response and error
-//
-// Response will contain deserialized result in Data field.
-// It will be []interface{}, so if you want more performace, use GetTyped method.
-//
-// Note: Response could be equal to nil if ClientError is returned in error.
-//
-// "error" could be Error, if it is error returned by Tarantool,
-// or ClientError, if something bad happens in a client process.
-func (fut *Future) Get() (*Response, error) {
-	fut.wait()
-	if fut.err != nil {
-		return fut.resp, fut.err
-	}
-	fut.err = fut.resp.decodeBody()
-	return fut.resp, fut.err
-}
-
-// GetTyped waits for Future and calls msgpack.Decoder.Decode(result) if no error happens.
-// It is could be much faster than Get() function.
-//
-// Note: Tarantool usually returns array of tuples (except for Eval and Call17 actions)
-func (fut *Future) GetTyped(result interface{}) error {
-	fut.wait()
-	if fut.err != nil {
-		return fut.err
-	}
-	fut.err = fut.resp.decodeBodyTyped(result)
-	return fut.err
-}
-
-var closedChan = make(chan struct{})
-
-func init() {
-	close(closedChan)
-}
-
-// WaitChan returns channel which becomes closed when response arrived or error occured
-func (fut *Future) WaitChan() <-chan struct{} {
-	if fut.ready == nil {
-		return closedChan
-	}
-	return fut.ready
-}
-
-// Err returns error set on Future.
-// It waits for future to be set.
-// Note: it doesn't decode body, therefore decoding error are not set here.
-func (fut *Future) Err() error {
-	fut.wait()
-	return fut.err
 }

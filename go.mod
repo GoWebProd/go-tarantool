@@ -1,10 +1,11 @@
-module github.com/tarantool/go-tarantool
+module gitlab.corp.mail.ru/icqweb/go/go-tarantool.git
 
-go 1.11
+go 1.18
 
 require (
-	github.com/niemeyer/pretty v0.0.0-20200227124842-a10e7caefd8e // indirect
-	google.golang.org/appengine v1.6.6 // indirect
-	gopkg.in/check.v1 v1.0.0-20200227125254-8fa46927fb4f // indirect
-	gopkg.in/vmihailenco/msgpack.v2 v2.9.1
+	github.com/GoWebProd/gip v0.0.0-20211004204909-3ddd41d029c0
+	github.com/GoWebProd/msgp v1.2.4
+	github.com/pkg/errors v0.9.1
 )
+
+require github.com/philhofer/fwd v1.1.2-0.20210722190033-5c56ac6d0bb9 // indirect

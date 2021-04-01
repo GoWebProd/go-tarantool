@@ -3,6 +3,9 @@ package tarantool
 import (
 	"net"
 	"time"
+	"unsafe"
+
+	"github.com/GoWebProd/gip/fasttime"
 )
 
 type DeadlineIO struct {
@@ -10,18 +13,30 @@ type DeadlineIO struct {
 	c  net.Conn
 }
 
-func (d *DeadlineIO) Write(b []byte) (n int, err error) {
-	if d.to > 0 {
-		d.c.SetWriteDeadline(time.Now().Add(d.to))
+func (d *DeadlineIO) getDeadline() time.Time {
+	type internalTime struct {
+		wall uint64
+		ext  int64
+		loc  *time.Location
 	}
-	n, err = d.c.Write(b)
-	return
+
+	t := internalTime{0, fasttime.NowNano() + int64(d.to), time.Local}
+
+	return *(*time.Time)(unsafe.Pointer(&t))
 }
 
-func (d *DeadlineIO) Read(b []byte) (n int, err error) {
+func (d *DeadlineIO) Write(b []byte) (int, error) {
 	if d.to > 0 {
-		d.c.SetReadDeadline(time.Now().Add(d.to))
+		d.c.SetWriteDeadline(d.getDeadline())
 	}
-	n, err = d.c.Read(b)
-	return
+
+	return d.c.Write(b)
+}
+
+func (d *DeadlineIO) Read(b []byte) (int, error) {
+	if d.to > 0 {
+		d.c.SetReadDeadline(d.getDeadline())
+	}
+
+	return d.c.Read(b)
 }

@@ -1,7 +1,7 @@
 package tarantool
 
 import (
-	"gopkg.in/vmihailenco/msgpack.v2"
+	"github.com/GoWebProd/msgp/msgp"
 )
 
 // IntKey is utility type for passing integer key to Select*, Update* and Delete*
@@ -10,10 +10,14 @@ type IntKey struct {
 	I int
 }
 
-func (k IntKey) EncodeMsgpack(enc *msgpack.Encoder) error {
-	enc.EncodeSliceLen(1)
-	enc.EncodeInt(k.I)
+func (k IntKey) EncodeMsg(enc *msgp.Writer) error {
+	enc.WriteArrayHeader(1)
+	enc.WriteInt(k.I)
 	return nil
+}
+
+func (k IntKey) Msgsize() int {
+	return 1 + msgp.IntSize(uint64(k.I))
 }
 
 // UintKey is utility type for passing unsigned integer key to Select*, Update* and Delete*
@@ -22,10 +26,14 @@ type UintKey struct {
 	I uint
 }
 
-func (k UintKey) EncodeMsgpack(enc *msgpack.Encoder) error {
-	enc.EncodeSliceLen(1)
-	enc.EncodeUint(k.I)
+func (k UintKey) EncodeMsg(enc *msgp.Writer) error {
+	enc.WriteArrayHeader(1)
+	enc.WriteUint(k.I)
 	return nil
+}
+
+func (k UintKey) Msgsize() int {
+	return 1 + msgp.IntSize(uint64(k.I))
 }
 
 // UintKey is utility type for passing string key to Select*, Update* and Delete*
@@ -34,37 +42,42 @@ type StringKey struct {
 	S string
 }
 
-func (k StringKey) EncodeMsgpack(enc *msgpack.Encoder) error {
-	enc.EncodeSliceLen(1)
-	enc.EncodeString(k.S)
+func (k StringKey) EncodeMsg(enc *msgp.Writer) error {
+	enc.WriteArrayHeader(1)
+	enc.WriteString(k.S)
 	return nil
 }
 
-// IntIntKey is utility type for passing two integer keys to Select*, Update* and Delete*
-// It serializes to array with two integer elements
-type IntIntKey struct {
-	I1, I2 int
-}
-
-func (k IntIntKey) EncodeMsgpack(enc *msgpack.Encoder) error {
-	enc.EncodeSliceLen(2)
-	enc.EncodeInt(k.I1)
-	enc.EncodeInt(k.I2)
-	return nil
+func (k StringKey) Msgsize() int {
+	return 1 + msgp.StringSize(len(k.S))
 }
 
 // Op - is update operation
 type Op struct {
 	Op    string
 	Field int
-	Arg   interface{}
+	Arg   msgp.Encodable
 }
 
-func (o Op) EncodeMsgpack(enc *msgpack.Encoder) error {
-	enc.EncodeSliceLen(3)
-	enc.EncodeString(o.Op)
-	enc.EncodeInt(o.Field)
-	return enc.Encode(o.Arg)
+func (o Op) EncodeMsg(enc *msgp.Writer) error {
+	enc.WriteArrayHeader(3)
+	enc.WriteString(o.Op)
+	enc.WriteInt(o.Field)
+	return o.Arg.EncodeMsg(enc)
+}
+
+type Ops []Op
+
+func (o Ops) EncodeMsg(enc *msgp.Writer) error {
+	enc.WriteArrayHeader(uint32(len(o)))
+
+	for i := 0; i < len(o); i++ {
+		if err := o[i].EncodeMsg(enc); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 type OpSplice struct {
@@ -75,12 +88,12 @@ type OpSplice struct {
 	Replace string
 }
 
-func (o OpSplice) EncodeMsgpack(enc *msgpack.Encoder) error {
-	enc.EncodeSliceLen(5)
-	enc.EncodeString(o.Op)
-	enc.EncodeInt(o.Field)
-	enc.EncodeInt(o.Pos)
-	enc.EncodeInt(o.Len)
-	enc.EncodeString(o.Replace)
+func (o OpSplice) EncodeMsg(enc *msgp.Writer) error {
+	enc.WriteArrayHeader(5)
+	enc.WriteString(o.Op)
+	enc.WriteInt(o.Field)
+	enc.WriteInt(o.Pos)
+	enc.WriteInt(o.Len)
+	enc.WriteString(o.Replace)
 	return nil
 }
